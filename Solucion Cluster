@@ -1,0 +1,167 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.cluster import KMeans
+from pandas.plotting import parallel_coordinates
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+
+url = "http://archive.ics.uci.edu/ml/machine-learning-databases/00352/Online%20Retail.xlsx"
+
+df = pd.read_excel(url, engine='openpyxl')
+
+print(df.head())
+
+df.info()
+df['TotalPurchase'] = df['Quantity'] * df['UnitPrice']
+
+df_rfm = df.groupby('CustomerID').agg(
+    MaxDate   = ('InvoiceDate', 'max'),
+    Frequency = ('InvoiceNo', 'nunique'),
+    Monetary  = ('TotalPurchase', 'sum')
+).reset_index()
+
+print(df_rfm.head())
+
+snapshot_date = df['InvoiceDate'].max() + pd.Timedelta(days=1)
+
+print("Fecha de snapshot:", snapshot_date)
+
+df_rfm['Recency'] = (snapshot_date - df_rfm['MaxDate']).dt.days
+df_rfm = df_rfm.drop(columns=['MaxDate'])
+
+print(df_rfm.head(6))
+
+df_rfm.drop(columns='CustomerID').describe()
+
+figure, ax = plt.subplots(nrows=1, ncols=3, figsize=(18, 5))
+ax[0].boxplot(df_rfm['Recency'], patch_artist=True, boxprops=dict(facecolor='skyblue'))
+ax[1].boxplot(df_rfm['Frequency'], patch_artist=True, boxprops=dict(facecolor='skyblue'))
+ax[2].boxplot(df_rfm['Monetary'], patch_artist=True, boxprops=dict(facecolor='skyblue'))
+plt.show()
+
+#Aplicamos log1p para manejar la asimetría de las variables RFM
+df_rfm['Recency_log'] = np.log1p(df_rfm['Recency'])
+df_rfm['Frequency_log'] = np.log1p(df_rfm['Frequency'])
+df_rfm['Monetary_log'] = np.log1p(df_rfm['Monetary'])
+
+figure, ax = plt.subplots(nrows=1, ncols=3, figsize=(18, 5))
+ax[0].hist(df_rfm['Recency_log'], patch_artist=True, boxprops=dict(facecolor='skyblue'))
+ax[1].hist(df_rfm['Frequency_log'], patch_artist=True, boxprops=dict(facecolor='skyblue'))
+ax[2].hist(df_rfm['Monetary_log'], patch_artist=True, boxprops=dict(facecolor='skyblue'))
+plt.show()
+
+#1.Eliminar los outliers utilizando el método del rango intercuartílico (IQR)
+Q1 = df_rfm[['Recency_log', 'Frequency_log', 'Monetary_log']].quantile(0.25)
+Q3 = df_rfm[['Recency_log', 'Frequency_log', 'Monetary_log']].quantile(0.75)
+IQR = Q3 - Q1
+
+print("Q1:\n", Q1)
+print("Q3:\n", Q3)
+print("IQR:\n", IQR)
+
+df_rfm_clean = df_rfm[~((df_rfm[['Recency_log', 'Frequency_log', 'Monetary_log']] < (Q1 - 1.5 * IQR)) | (df_rfm[['Recency_log', 'Frequency_log', 'Monetary_log']] > (Q3 + 1.5 * IQR))).any(axis=1)]
+
+figure, ax = plt.subplots(nrows=1, ncols=3, figsize=(18, 5))
+ax[0].boxplot(df_rfm_clean['Recency_log'], patch_artist=True, boxprops=dict(facecolor='lightgreen'))
+ax[1].boxplot(df_rfm_clean['Frequency_log'], patch_artist=True, boxprops=dict(facecolor='lightgreen'))
+ax[2].boxplot(df_rfm_clean['Monetary_log'], patch_artist=True, boxprops=dict(facecolor='lightgreen'))
+plt.show()
+
+#Normalizar los datos utilizando Z-score
+scaler = StandardScaler()
+df_rfm_scaled = df_rfm_clean.copy()
+df_rfm_scaled[['Recency_log', 'Frequency_log', 'Monetary_log']] = scaler.fit_transform(df_rfm_clean[['Recency_log', 'Frequency_log', 'Monetary_log']])
+print(df_rfm_scaled.head())
+
+#Validamos cuantos clusters son óptimos utilizando el método del codo
+k = range(1, 11)
+inertia = []
+
+for i in k:
+    kmeans = KMeans(n_clusters = i, random_state = 42)
+    kmeans.fit(df_rfm_scaled)
+    inertia.append(kmeans.inertia_)
+plt.plot(k, inertia, marker='o')
+plt.xlabel('Número de clusters')
+plt.ylabel('Inertia')
+plt.title('Elbow Method para determinar el número óptimo de clusters')
+plt.show()
+
+#CLuster con K-means tiene que ser 3
+modelo = KMeans(n_clusters=3, random_state=42)
+df_rfm_scaled['Cluster'] = modelo.fit_predict(df_rfm_scaled[['Recency_log', 'Frequency_log', 'Monetary_log']])
+print(df_rfm_scaled.head())
+
+#Calculamos los centroides en valores reales para interpretar los segmentos
+centroides = df_rfm_scaled.groupby('Cluster')[['Recency_log', 'Frequency_log', 'Monetary_log']].mean().reset_index() 
+print("Centroides en valores reales:")
+print(centroides)
+
+
+plt.figure(figsize=(12, 7))
+parallel_coordinates(centroides,'Cluster', colormap='vlag', linewidth=4, marker='o')
+plt.axhline(0, color='black', linestyle='--', alpha=0.5)
+plt.title('Perfiles de Centroides: Segmentación de Clientes RFM', fontsize=16, pad=20)
+plt.ylabel('Desviación Estándar (Z-Score)', fontsize=12)
+plt.xlabel('Métricas de Comportamiento', fontsize=12)   
+plt.grid(axis='y', alpha=0.3)
+plt.legend(title='Segmentos', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
+plt.show()
+
+
+
+#Ajustado a mis datos sin normalizar
+df_rfm_clean['Cluster'] = modelo.fit_predict(df_rfm_scaled[['Recency_log', 'Frequency_log', 'Monetary_log']])
+print(df_rfm_clean.head(5))
+
+Centroides_cleaned = df_rfm_clean.groupby('Cluster')[['Recency', 'Frequency', 'Monetary']].mean()
+print(Centroides_cleaned)
+
+
+#Visualizar las caracterticas de cada cluster con grafico de barras separado por cada métrica RFM
+centroides_melted = Centroides_cleaned.reset_index().melt(
+    id_vars='Cluster', 
+    var_name='Metrica', 
+    value_name='Valor'
+)
+
+# 2. Crear el gráfico con FacetGrid (equivale al facet_wrap de R)
+# sharey=False es la clave para que cada métrica tenga su propia escala
+g = sns.catplot(
+    data=centroides_melted,
+    x='Cluster',
+    y='Valor',
+    col='Metrica',
+    kind='bar',
+    palette='Set2',
+    sharey=False,  # <--- Esto evita que el Monetary aplaste a los demás
+    height=4,
+    aspect=1
+)
+plt.show()
+
+
+
+'''''Interpretación de los Clústeres (basado en un resultado típico):
+El orden de los clusters puede variar
+
+Clúster 1 (Clientes Campeones/Leales):
+
+Recencia más baja: Han comprado muy recientemente.
+Frecuencia más alta: Compran a menudo.
+Valor Monetario más alto: Gastan la mayor cantidad de dinero.
+Acción de Negocio: Estos son tus mejores clientes. Hay que retenerlos con programas de lealtad, acceso anticipado a productos y un servicio premium.
+
+Clúster 0(Clientes en Riesgo/Necesitan Atención):
+
+Recencia media/alta: Ha pasado un tiempo considerable desde su última compra.
+Frecuencia y Valor Monetario medios: Solían ser buenos clientes, pero están "durmiendo".
+Acción de Negocio: Lanzar campañas de reactivación con ofertas especiales o descuentos para incentivar una nueva compra.
+
+Clúster 2 (Clientes Ocasionales/Nuevos):
+
+Recencia alta: Su última compra fue hace mucho tiempo (o son nuevos y solo han comprado una vez).
+Frecuencia y Valor Monetario más bajos: Compran esporádicamente y gastan poco.
+Acción de Negocio: Pueden ser clientes nuevos o de bajo valor. Se pueden incluir en campañas de marketing generales para aumentar su frecuencia de compra y convertirlos en clientes más leales.'''
